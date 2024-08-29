@@ -18,6 +18,8 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <iostream>
+#include <chrono>
 
 #ifdef _MSC_VER
     #pragma warning(push)
@@ -1472,6 +1474,207 @@ inline constexpr uint<2 * N> umul(const uint<N>& x, const uint<N>& y) noexcept
     }
     return p;
 }
+inline uint<256> getToomSlice(uint<256> num, int lowerSize, int upperSize, int slice, int fullSize) {
+    int start, end, sliceSize, len, offset;
+
+    // Determine the length of the number in terms of 32-bit chunks
+    len = 256 / 32;  // Each number has 256 bits, equivalent to 8 32-bit chunks
+    offset = fullSize - len;
+
+    if (slice == 0) {
+        start = 0 - offset;
+        end = upperSize - 1 - offset;
+    } else {
+        start = upperSize + (slice - 1) * lowerSize - offset;
+        end = start + lowerSize - 1;
+    }
+
+    if (start < 0) {
+        start = 0;
+    }
+    if (end < 0) {
+        return uint<256>(0);  // Equivalent to Java's ZERO
+    }
+
+    sliceSize = (end - start) + 1;
+
+    if (sliceSize <= 0) {
+        return uint<256>(0);  // Equivalent to Java's ZERO
+    }
+
+    // If the slice starts at zero and covers the whole number, return the absolute value
+    if (start == 0 && sliceSize >= len) {
+        return num;
+    }
+
+    // Extract the slice from the number
+    uint<256> mask = (uint<256>{1} << (sliceSize * 32)) - 1;
+    uint<256> sliceValue = (num >> (start * 32)) & mask;
+
+    return sliceValue;
+}
+
+inline uint<256> squareToomCook3(uint<256> a) {
+
+    if ((a < (uint<256>{1} << 240)) ) {
+        return a * a;
+    }
+
+    int len = 256; //std::max(alen, blen) / 32;
+
+    // k is the size (in ints) of the lower-order slices.
+    int k = (len + 2) / 3;   // Equal to ceil(len / 3)
+
+    // r is the size (in ints) of the highest-order slice.
+    int r = len - 2 * k;
+
+    // Obtain slices of the numbers.
+    uint<256> a0 = getToomSlice(a, k, r, 2, len);
+    uint<256> a1 = getToomSlice(a, k, r, 1, len);
+    uint<256> a2 = getToomSlice(a, k, r, 0, len);
+
+    // Compute p1 = a0 * b0
+    uint<256> v0 = a0 * a0;
+    uint<256> da1 = a2 + a0;
+    uint<256> vm1 = (da1 - a1) * (da1 - a1);
+    da1 += a1;
+    uint<256> v1 = da1 * da1;
+    uint<256> vinf = a2 * a2;
+    uint<256> v2 = (da1 + a2) << 1;
+    v2 = v2 - a0;
+    v2 = v2 * v2;
+
+    // Compute vinf
+    
+
+    // Compute the intermediate results
+    uint<256> t2 = (v2 - vm1) / 3;
+    uint<256> tm1 = (v1 - vm1) >> 1;
+    uint<256> t1 = v1 - v0;
+    t2 = (t2 - t1) >> 1;
+    t1 = t1 - tm1 - vinf;
+    t2 = t2 - (vinf << 1);
+    tm1 = tm1 - t2;
+
+    // Number of bits to shift left
+    int ss = k * 32;
+
+    // Combine the results
+    uint<256> result = (vinf << (4 * ss)) + (t2 << (3 * ss)) + (t1 << (2 * ss)) + (tm1 << ss) + v0;
+
+    // Return the result (no sign handling as uint<256> is unsigned)
+    return result;
+}
+
+// Toom-Cook 3-way multiplication function
+inline uint<256> multiplyToomCook3(uint<256> a, uint<256> b) {
+
+    if ((a < (uint<256>{1} << 240)) || (b < (uint<256>{1} << 240))) {
+        return a * b;
+    }
+
+    int largest = 256; //std::max(alen, blen) / 32;
+
+    // k is the size (in ints) of the lower-order slices.
+    int k = (largest + 2) / 3;   // Equal to ceil(largest / 3)
+
+    // r is the size (in ints) of the highest-order slice.
+    int r = largest - 2 * k;
+
+    // Obtain slices of the numbers.
+    uint<256> a0 = getToomSlice(a, k, r, 2, largest);
+    uint<256> a1 = getToomSlice(a, k, r, 1, largest);
+    uint<256> a2 = getToomSlice(a, k, r, 0, largest);
+
+    uint<256> b0 = getToomSlice(b, k, r, 2, largest);
+    uint<256> b1 = getToomSlice(b, k, r, 1, largest);
+    uint<256> b2 = getToomSlice(b, k, r, 0, largest);
+
+    // Compute p1 = a0 * b0
+    uint<256> v0 = a0 * b0;
+
+    // Compute p2 = a1 * b1
+    uint<256> p1 = a2 * b2;
+    uint<256> p2 = a0 * b0;
+
+    // Compute p3 = (a0 + a1) * (b0 + b1)
+    uint<256> da1 = a2 + a0;
+    uint<256> db1 = b2 + b0;
+    uint<256> vm1 = (da1 - a1) * (db1 - b1);
+    da1 += a1;
+    db1 += b1;
+    uint<256> v1 = da1 * db1;
+
+    // Compute v2
+    uint<256> v2 = (da1 + a2) << 1;
+    v2 = v2 - a0;
+    v2 = v2 * ((db1 + b2) << 1 - b0);
+
+    // Compute vinf
+    uint<256> vinf = p1;
+
+    // Compute the intermediate results
+    uint<256> t2 = (v2 - vm1) / 3;
+    uint<256> tm1 = (v1 - vm1) >> 1;
+    uint<256> t1 = v1 - v0;
+    t2 = (t2 - t1) >> 1;
+    t1 = t1 - tm1 - vinf;
+    t2 = t2 - (vinf << 1);
+    tm1 = tm1 - t2;
+
+    // Number of bits to shift left
+    int ss = k * 32;
+
+    // Combine the results
+    uint<256> result = (vinf << (4 * ss)) + (t2 << (3 * ss)) + (t1 << (2 * ss)) + (tm1 << ss) + v0;
+
+    // Return the result (no sign handling as uint<256> is unsigned)
+    return result;
+}
+
+inline uint<256> multiplyKaratsuba(uint<256> x, uint<256> y) {
+    if (x < (uint<256>{1} << 80) || y < (uint<256>{1} << 80)) {
+        return x * y;
+    }
+    // Split x and y into upper and lower halves
+    const unsigned half = 128;
+    uint<half> xl = static_cast<uint<half>>(x);  // Lower 128 bits
+    uint<half> xh = static_cast<uint<half>>(x >> half);  // Upper 128 bits
+    
+    uint<half> yl = static_cast<uint<half>>(y);  // Lower 128 bits
+    uint<half> yh = static_cast<uint<half>>(y >> half);  // Upper 128 bits
+
+    
+
+    uint<256> p1 = uint<256>(xh) * uint<256>(yh);
+    uint<256> p2 = uint<256>(xl) * uint<256>(yl);
+    uint<256> p3 = uint<256>(xh + xl) * uint<256>(yh + yl);
+
+    // Compute result = p1 * 2^(256) + (p3 - p1 - p2) * 2^(128) + p2
+    return ((p3 - p1 - p2) << 128) + p2;
+}
+
+inline uint<256> squareKaratsuba(uint<256> x) {
+    uint<128> upper = static_cast<uint<128>>(x >> 128); // Upper 128 bits
+    uint<128> lower = static_cast<uint<128>>(x);        // Lower 128 bits
+
+    if (upper == 0) {
+        // If the upper half is zero, it fits within 128 bits, so use normal multiplication
+        return uint<256>(lower) * lower;
+    }
+
+    uint<256> z0 = uint<256>(lower) * lower;             // z0 = x0^2
+    uint<256> z1 = uint<256>(upper) * upper;             // z1 = x1^2
+    uint<256> sum = upper + lower;                             // x1 + x0
+    uint<256> z2 = sum * sum;                 // z2 = (x1 + x0)^2
+
+    uint<256> middle_term = z2 - z1 - z0;                      // middle term = z2 - z1 - z0
+
+    // Combine the results
+    uint<256> result = (middle_term << 128) + z0; // Final result: z1 * 2^256 + middle_term * 2^128 + z0
+    return result;
+}
+
 
 template <unsigned N>
 inline constexpr uint<N> exp(uint<N> base, uint<N> exponent) noexcept
@@ -1479,14 +1682,161 @@ inline constexpr uint<N> exp(uint<N> base, uint<N> exponent) noexcept
     auto result = uint<N>{1};
     if (base == 2)
         return result << exponent;
-
+    int square_duration = 0, square_n = 0;
+    int mult_duration = 0, mult_n = 0;
+    int exp_duration = 0, exp_n = 0;
     while (exponent != 0)
     {
-        if ((exponent & 1) != 0)
+        if ((exponent & 1) != 0) {
+            auto const mult_start = std::chrono::steady_clock::now();
             result *= base;
+            auto const mult_end = std::chrono::steady_clock::now();
+            auto const elapsed_mult = std::chrono::duration_cast<std::chrono::nanoseconds>(mult_end - mult_start).count();
+            mult_duration += elapsed_mult;
+            mult_n++;
+        }
+        auto const square_start = std::chrono::steady_clock::now();
         base *= base;
+        auto const square_end = std::chrono::steady_clock::now();
+        auto const elapsed_square = std::chrono::duration_cast<std::chrono::nanoseconds>(square_end - square_start).count();
+        square_duration += elapsed_square;
+        square_n++;
+        auto const exp_start = std::chrono::steady_clock::now();
+        exponent >>= 1;
+        auto const exp_end = std::chrono::steady_clock::now();
+        auto const elapsed_exp = std::chrono::duration_cast<std::chrono::nanoseconds>(exp_end - exp_start).count();
+        exp_duration += elapsed_exp;
+        exp_n++;
+        
+    }
+    std::cout << "square: " << (double)square_duration / (double)square_n << "ns (avg across " << square_n << " times\n";
+    std::cout << "mult: " << (double)mult_duration / (double)mult_n << "ns (avg across " << mult_n << " times\n";
+    std::cout << "exp: " << (double)exp_duration / (double)exp_n << "ns (avg across " << exp_n << " times\n";
+    return result;
+}
+template <unsigned N>
+inline constexpr uint<N> exp1(uint<N> base, uint<N> exponent) noexcept
+{
+    auto result = uint<N>{1};
+    if (base == 2)
+        return result << exponent;
+    int square_duration = 0, square_n = 0;
+    int mult_duration = 0, mult_n = 0;
+    while (exponent != 0)
+    {
+        if ((exponent & 1) != 0) {
+            auto const mult_start = std::chrono::steady_clock::now();
+            result *= base;
+            auto const mult_end = std::chrono::steady_clock::now();
+            auto const elapsed_mult = std::chrono::duration_cast<std::chrono::nanoseconds>(mult_end - mult_start).count();
+            mult_duration += elapsed_mult;
+            mult_n++;
+        }
+        auto const square_start = std::chrono::steady_clock::now();
+        base = squareKaratsuba(base);
+        auto const square_end = std::chrono::steady_clock::now();
+        auto const elapsed_square = std::chrono::duration_cast<std::chrono::nanoseconds>(square_end - square_start).count();
+        square_duration += elapsed_square;
+        square_n++;
         exponent >>= 1;
     }
+    std::cout << "square: " << (double)square_duration / (double)square_n << "ns (avg across " << square_n << " times\n";
+    std::cout << "mult: " << (double)mult_duration / (double)mult_n << "ns (avg across " << mult_n << " times\n";
+    return result;
+}
+template <unsigned N>
+inline constexpr uint<N> exp2(uint<N> base, uint<N> exponent) noexcept
+{
+    auto result = uint<N>{1};
+    if (base == 2)
+        return result << exponent;
+    int square_duration = 0, square_n = 0;
+    int mult_duration = 0, mult_n = 0;
+    while (exponent != 0)
+    {
+        if ((exponent & 1) != 0) {
+            auto const mult_start = std::chrono::steady_clock::now();
+            result = multiplyKaratsuba(result, base);
+            auto const mult_end = std::chrono::steady_clock::now();
+            auto const elapsed_mult = std::chrono::duration_cast<std::chrono::nanoseconds>(mult_end - mult_start).count();
+            mult_duration += elapsed_mult;
+            mult_n++;
+        }
+        auto const square_start = std::chrono::steady_clock::now();
+        base *= base;
+        auto const square_end = std::chrono::steady_clock::now();
+        auto const elapsed_square = std::chrono::duration_cast<std::chrono::nanoseconds>(square_end - square_start).count();
+        square_duration += elapsed_square;
+        square_n++;
+        exponent >>= 1;
+    }
+    std::cout << "square: " << (double)square_duration / (double)square_n << "ns (avg across " << square_n << " times\n";
+    std::cout << "mult: " << (double)mult_duration / (double)mult_n << "ns (avg across " << mult_n << " times\n";
+    return result;
+}
+template <unsigned N>
+inline constexpr uint<N> exp3(uint<N> base, uint<N> exponent) noexcept
+{
+    auto result = uint<N>{1};
+    if (base == 2)
+        return result << exponent;
+    int square_duration = 0, square_n = 0;
+    int mult_duration = 0, mult_n = 0;
+    while (exponent != 0)
+    {
+        //std::cout << to_string(base) << "\n";
+        if ((exponent & 1) != 0) {
+            auto const mult_start = std::chrono::steady_clock::now();
+            result *= base;
+            auto const mult_end = std::chrono::steady_clock::now();
+            auto const elapsed_mult = std::chrono::duration_cast<std::chrono::nanoseconds>(mult_end - mult_start).count();
+            mult_duration += elapsed_mult;
+            mult_n++;
+            //std::cout << to_string(result) << "\n";
+        }
+        auto const square_start = std::chrono::steady_clock::now();
+        base = squareToomCook3(base);
+        auto const square_end = std::chrono::steady_clock::now();
+        auto const elapsed_square = std::chrono::duration_cast<std::chrono::nanoseconds>(square_end - square_start).count();
+        square_duration += elapsed_square;
+        square_n++;
+        exponent >>= 1;
+    }
+    std::cout << "square: " << (double)square_duration / (double)square_n << "ns (avg across " << square_n << " times\n";
+    std::cout << "mult: " << (double)mult_duration / (double)mult_n << "ns (avg across " << mult_n << " times\n";
+    return result;
+}
+
+template <unsigned N>
+inline constexpr uint<N> exp4(uint<N> base, uint<N> exponent) noexcept
+{
+    auto result = uint<N>{1};
+    if (base == 2)
+        return result << exponent;
+    int square_duration = 0, square_n = 0;
+    int mult_duration = 0, mult_n = 0;
+    while (exponent != 0)
+    {
+        //std::cout << to_string(base) << "\n";
+        if ((exponent & 1) != 0) {
+            auto const mult_start = std::chrono::steady_clock::now();
+            result = multiplyToomCook3(result, base);
+            auto const mult_end = std::chrono::steady_clock::now();
+            auto const elapsed_mult = std::chrono::duration_cast<std::chrono::nanoseconds>(mult_end - mult_start).count();
+            mult_duration += elapsed_mult;
+            mult_n++;
+            //std::cout << to_string(result) << "\n";
+        }
+        auto const square_start = std::chrono::steady_clock::now();
+        base *= base;
+        auto const square_end = std::chrono::steady_clock::now();
+        auto const elapsed_square = std::chrono::duration_cast<std::chrono::nanoseconds>(square_end - square_start).count();
+        square_duration += elapsed_square;
+        square_n++;
+        exponent >>= 1;
+    }
+    std::cout << "square: " << (double)square_duration / (double)square_n << "ns (avg across " << square_n << " times\n";
+    std::cout << "mult: " << (double)mult_duration / (double)mult_n << "ns (avg across " << mult_n << " times\n";
     return result;
 }
 
